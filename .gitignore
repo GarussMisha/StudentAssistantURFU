@@ -1,0 +1,12 @@
+task.md
+.ignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+data/kb/
+eval/reports/
+node_modules/
+dist/
