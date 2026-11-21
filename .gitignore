@@ -11,3 +11,4 @@ eval/reports/
 node_modules/
 dist/
 .opencode
+.agents
