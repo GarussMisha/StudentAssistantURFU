@@ -67,7 +67,7 @@ data/kb/raw (PDF/DOCX/MD)
 ### Хранение данных
 
 - **PostgreSQL** — источник истины: пользователи, серверные сессии, чаты, сообщения, цитаты (со снимком метаданных), оценки, документы и статусы индексации. Транзакции и реляционные связи здесь.
-- **Qdrant** — производный векторный индекс. Текст чанка дублируется в payload для цитат; исходный Markdown хранится в `data/kb/processed/`. При расхождении индекс перестраивается, а не «чинится» по векторам.
+- **Qdrant** — производный векторный индекс. Текст чанка дублируется в payload для цитат; канонический Markdown хранится в `data/kb/md/`. При расхождении индекс перестраивается, а не «чинится» по векторам.
 
 ### LLM-шлюз
 
@@ -137,7 +137,7 @@ openspec validate "<имя-изменения>" --strict
 │   ├── schemas/             # Pydantic-модели
 │   ├── services/            # Доменные сервисы
 │   └── web/                 # Веб-интерфейс (Jinja2 + HTMX + SSE)
-├── data/kb/                 # База знаний (вне git): raw/, processed/, manifest.yaml
+├── data/kb/                 # База знаний (вне git): raw/, md/, manifest.yaml
 ├── docs/                    # 00-project-task.md + исследования требований research/
 ├── eval/                    # Оценка качества: dataset, runner, report.md
 ├── openspec/                # Спецификации и изменения (OpenSpec)
@@ -166,7 +166,7 @@ openspec validate "<имя-изменения>" --strict
 cp .env.example .env
 #    отредактируйте .env: LLM_BASE_URL / EMBEDDING_BASE_URL, ключи, БД
 
-# 2. Подготовить базу знаний в data/kb/raw/ (PDF/DOCX/MD) и manifest.yaml
+# 2. Положить исходники корпуса в data/kb/raw/ (PDF/DOCX/MD) и описать его в data/kb/manifest.yaml
 
 # 3. Собрать образы, применить миграции и запустить
 docker compose up -d
