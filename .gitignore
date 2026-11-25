@@ -13,3 +13,6 @@ dist/
 .opencode
 .agents
 AGENTS.md
+
+# артефакты npm (OpenSpec CLI ставится глобально, JS-сборки в проекте нет)
+package-lock.json
