@@ -1,6 +1,6 @@
 # 04. Исследование: база знаний
 
-- Статус: СОГЛАСОВАНО (v1.0)
+- Статус: СОГЛАСОВАНО (v1.1); сверка 2026-11-25
 - Дата: 2026-11-25
 - Зависит от: 02 (продукт и пользователи), 03 (контракты)
 - Питает: 05 (RAG-ответы), 08 (eval), 09 (деплой)
@@ -30,8 +30,8 @@ eval-датасет (08). Он обязан дать 05 стабильный к�
 - **F-06:** `docker-compose.yml` монтирует корпус как именованный том
   `kb_data:/data/kb`; при этом файлы хоста `data/kb/raw/` в контейнер **не
   попадают** — индексировать нечего.
-- **F-07:** `README.md` и `AGENTS.md` ссылаются на `data/kb/processed/`, хотя
-  решением KB-01 каталог называется `data/kb/md/`.
+- **F-07 (закрыт 2026-11-25):** `README.md` и `AGENTS.md` уже переведены на
+  `data/kb/md/`; упоминаний `processed/` в документации не осталось.
 - 03 §5.4 зафиксировал `QDRANT_COLLECTION=kb_chunks`, `RETRIEVAL_TOP_K=10`,
   `chunk_id` — строка в `sources`; 03 §5.1 объявил, что таблица документов
   создаётся в 04.
@@ -77,8 +77,10 @@ documents:
 
 - `material_type ∈ gost | standard | book | article | methodical | other`
   (закрытый список, русские подписи в UI).
-- `doc_key` = имя файла без расширения; `title` = первый `# H1` из Markdown,
-  иначе имя файла без расширения и без префикса `NN_`.
+- `doc_key` = имя файла без расширения; допускаются только
+  `[A-Za-z0-9_-]` (кириллица, пробелы и прочие символы → код 2);
+  `title` = первый `# H1` из Markdown, иначе имя файла без расширения
+  и без префикса `NN_`.
 - Валидация манифеста — Pydantic, `extra="forbid"`: опечатка в ключе роняет
   запуск с кодом 2, а не молча игнорируется.
 - Файлы в `raw/`, отсутствующие в манифесте, **игнорируются** с warning.
@@ -99,7 +101,7 @@ CREATE TABLE kb_documents (
     md_path        varchar(300),
     status         text        NOT NULL CHECK (status IN
                      ('pending','converting','chunking','embedding',
-                      'indexed','outdated','failed','removed')),
+                      'indexed','failed','removed')),
     chunks_count   int         NOT NULL DEFAULT 0,
     source_mtime   timestamptz,
     indexed_at     timestamptz,
@@ -257,7 +259,7 @@ CREATE INDEX ix_kb_chunks_doc ON kb_chunks(document_id);
 ### FR-10. Статусы и CLI
 
 Статусы: `pending → converting → chunking → embedding → indexed`, а также
-`outdated`, `failed`, `removed`. Переходы пишутся в БД для наблюдаемости.
+`failed`, `removed`. Переходы пишутся в БД для наблюдаемости.
 
 ```
 uv run python scripts/ingest.py [--doc <doc_key>] [--force]
@@ -285,8 +287,9 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
   **текст чанков не логируется** (только длины и хеши).
 - `/health` (03 §FR-10): `kb.documents = COUNT(status='indexed')`,
   `kb.chunks = SUM(chunks_count)`, `kb.indexed_at = MAX(indexed_at)`;
-  `empty` — нет строк; `not_indexed` — есть строки, но 0 indexed;
-  `degraded` — есть `failed`/`outdated`.
+  `empty` — нет строк; `degraded` — есть `failed`; `not_indexed` — есть строки,
+  но 0 `indexed` и нет `failed`; `ok` иначе. Приоритет:
+  `degraded` → `not_indexed` → `empty` → `ok`.
 
 ## 5. Контракты и точки интеграции
 
@@ -295,7 +298,7 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
 | 05 (retrieval) | точки `kb_chunks`, payload из FR-7 | `text` полный, `chunk_id` стабилен до изменения текста |
 | 05 (цитаты) | `doc_key, document_title, material_type, heading_path, text` | значения — снимок на момент индексации |
 | 03 (health) | counts и статус БЗ | см. FR-11 |
-| 08 (eval) | воспроизводимый корпус | `manifest.yaml` в git + `content_sha256` в отчёте |
+| 08 (eval) | воспроизводимый корпус | `manifest.yaml` + `corpus_content_hash` = sha256 от сортированных `doc_key:content_sha256` по `indexed`-документам |
 | 09 (деплой) | bind-mount `./data/kb:/data/kb` | обратная совместимость с CLI |
 
 Изменение модели эмбеддингов — событие уровня инфраструктуры: требует
@@ -320,7 +323,7 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
 | Файл вернулся после удаления | полная обработка, строка переиспользуется |
 | Смена модели эмбеддингов | код 2, инструкция `--recreate-collection` |
 | Обрыв сети при эмбеддингах | 3 retry, затем `failed`, прогон продолжается |
-| Кириллица в именах файлов | `doc_key` транслитерируется? **нет** — только латиница/цифры/дефис, иначе код 2 |
+| Кириллица/пробелы в именах файлов | запрещены: `doc_key` только `[A-Za-z0-9_-]`, иначе код 2 |
 
 ## 7. НФТ
 
@@ -339,8 +342,9 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
 
 - [ ] Манифест с 3 пилотными файлами валиден; лишний файл в `raw/` игнорируется.
 - [ ] Все 3 файла превращены в `data/kb/md/*.md`, таблицы — HTML, текст читаем.
-- [ ] Чанки: 150 ≤ длина ≤ 900, кроме атомарных блоков (≤ 3000); перекрытие 90;
-      разрез не по середине слова.
+- [ ] Обычные чанки: 150…900 (короче 150 — только если в секции нет
+      предыдущего), атомарные блоки ≤ 3000; перекрытие 90; разрез не по середине
+      слова.
 - [ ] `kb_chunks.chunk_id` совпадает с point ID в Qdrant, `chunks_count` = числу
       точек по `doc_key`.
 - [ ] Повторный ingest без изменений: 0 эмбеддингов, все skip, ≤ 5 с.
@@ -378,6 +382,8 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
 | KB-18 | Батчи по 32, retry 3×, атомарность на документ, «хвосты» чистит верификация. |
 | KB-19 | Дубликаты файлов: побеждает алфавитно меньший `doc_key`, остальные `failed`. |
 | KB-20 | `--dry-run` и `--verify` обязательны; автоиндексации при старте нет. |
+| KB-21 | `corpus_content_hash` = sha256 от сортированных строк `doc_key:content_sha256(hex)` по `indexed`-документам; используется eval-отчётом (08). |
+| KB-22 | `doc_key` — только `[A-Za-z0-9_-]`; кириллица/пробелы → код 2 (пилотные файлы уже соответствуют). |
 
 ### Дефекты и дельты
 
@@ -388,20 +394,21 @@ uv run python scripts/ingest.py [--doc <doc_key>] [--force]
 | D-17 | Параметры чанкинга 600/900/150/90/3000 | 05 (контекст), 08 (отчёт) |
 | D-18 | Добавлены таблицы `kb_documents`, `kb_chunks` | 03 §5.1 |
 | F-06 | Корпус смонтирован именованным томом, хост-файлы не видны | `docker-compose.yml` (09) |
-| F-07 | README/AGENTS упоминают `processed/` | README, AGENTS.md |
+| F-07 | README/AGENTS упоминали `processed/` — **закрыт**: переведены на `md/` | README, AGENTS.md |
 | F-08 | `manifest.yaml` и `data/kb/md/` отсутствуют | репозиторий |
 | F-09 | Нет `scripts/ingest.py`, `app/rag/`, `app/db/` | реализация M0 |
 
 ## 10. Открытые вопросы
 
-- **OQ-04-01** (→ 05): модель эмбеддингов и её размерность; от неё зависит
-  пересоздание коллекции и качество retrieval.
-- **OQ-04-02** (→ 05): влияние `heading_path` в эмбеддинге на выдачу — проверить
-  на пилоте, при ухудшении отказаться (KB-17 отменяется новым решением).
-- **OQ-04-03** (→ 08): фиксация `content_sha256` корпуса в eval-отчёте.
-- **OQ-04-04** (→ 09): bind-mount и права на `data/kb` в контейнере.
-- **OQ-04-05**: нужна ли поддержка `.txt`/`.html` — пока нет, добавляется одной
-  строкой в диспетчере.
+Блокирующих нет: OQ-04-01…05 закрыты или перенесены.
+
+- **OQ-04-01** — закрыт 09: модель `text-embedding-qwen3-embedding-0.6b`,
+  одна для dev и prod (09 DEV-02).
+- **OQ-04-02** — принят: `heading_path` в эмбеддинге (KB-17) проверяется на
+  пилоте; при ухудшении — новое решение, не правка кода.
+- **OQ-04-03** — закрыт 08: `corpus_content_hash` фиксируется в отчёте.
+- **OQ-04-04** — закрыт 09: bind-mount `./data/kb:/data/kb` (FR-1).
+- **OQ-04-05** — закрыт 10: `.txt`/`.html`/`.rtf` — бэклог BL-23.
 
 ## 11. Бэклог
 

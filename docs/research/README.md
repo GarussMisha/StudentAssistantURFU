@@ -1,6 +1,7 @@
 # Исследования требований — план
 
-Исходная постановка задачи (источник истины) — `docs/00-project-task.md`.
+- Статус: ВЫПОЛНЕНО (01–10 согласованы; сверка 2026-11-25)
+- Исходная постановка задачи (источник истины) — `docs/00-project-task.md`.
 
 ## Методология
 
@@ -18,16 +19,16 @@
 | 02 | `02-product-and-users.md` | Аудитория, сценарии, ценность, ПДн, сроки | 01 | сквозные НФТ |
 | 03 | `03-cross-cutting-contracts.md` | Модель данных, API, SSE, статусы, цитаты, health | 01, 04, 05 | api-contracts |
 | 04 | `04-knowledge-base.md` | Корпус, манифест, конвертация, чанкинг, индексация | 02 | knowledge-base |
-| 05 | `05-rag-answering.md` | Retrieval, rewrite, порог/отказ, стриминг, multi-turn | 04 | rag-answering |
+| 05 | `05-rag-answering.md` | Retrieval, rewrite, порог/ungrounded, стриминг, multi-turn | 04 | rag-answering |
 | 06 | `06-conversations-and-ratings.md` | Чаты, сообщения, список, оценки, удаление истории | 01, 03 | conversation-history |
-| 07 | `07-accounts-and-security.md` | Регистрация, сессии, пароли, профиль, лимиты | 01, 02 | user-accounts |
+| 07 | `07-accounts-and-security.md` | Регистрация, сессии, пароли, профиль, троттлинг входа | 01, 02 | user-accounts |
 | 08 | `08-quality-evaluation.md` | Датасет, шкала, прогон, отчёт, пороги | 05, 06 | quality-evaluation |
-| 09 | `09-deployment-and-ops.md` | Compose, HTTPS, бэкапы, мониторинг, домен | 02, 03 | deployment |
+| 09 | `09-deployment-and-ops.md` | Compose, HTTP-стенд, LAN-модели, риски, бэкапы | 02, 03 | deployment |
 | 10 | `10-backlog.md` | Отложенные фичи и причины | все | — |
 
 ## Порядок
 
-01 (готово) → 02 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10.
+Все документы 01–10 согласованы; порядок интервью был 01 → 02 → … → 10.
 Один документ = 1–2 раунда интервью (30–60 минут).
 
 ## Шаблон документа

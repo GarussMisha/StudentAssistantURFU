@@ -1,10 +1,10 @@
 # 03. Исследование: сквозные контракты
 
-- Статус: СОГЛАСОВАНО (v1.0)
+- Статус: СОГЛАСОВАНО (v1.1); сверка 2026-11-25
 - Дата: 2026-11-25
 - Зависит от: 01 (web-interface), 02 (product-and-users)
 - Питает: 04 (БЗ), 05 (RAG), 06 (чаты/оценки), 07 (аккаунты), 08 (eval), 09 (деплой)
-- Закрывает: OQ-01, D-03, D-04, PR-15, OQ-04, OQ-05
+- Закрывает: OQ-01, D-03, D-04, PR-15, OQ-04, OQ-05; OQ-03-01…06 закрыты в 04–09
 
 ## 1. Контекст и цель
 
@@ -30,10 +30,11 @@
   отсутствует, хотя OpenRouter для эмбеддингов требует ключ.
 - `docker-compose.yml`: healthcheck только у `postgres`/`qdrant`; у `app` его нет.
   `deploy/Caddyfile` в репозитории отсутствует (зона 09).
-- `pyproject.toml`: `qdrant-client[fastembed]` — эмбеддинги внешние, extra не нужен.
-- `README.md` противоречит 01/02: «честный отказ» вместо `ungrounded`, eval
-  «30 вопросов / ≥80%» вместо 20+20 и порогов 19/16. Источник истины —
-  `docs/research/` (CC-10), README правится отдельной задачей.
+- `pyproject.toml`: `qdrant-client[fastembed]` — при удалённых эмбеддингах extra
+  не нужен; оставлен на случай CPU-эмбеддингов (09 DEV-02).
+- `README.md` до 2026-11-25 противоречил 01/02 («честный отказ», eval «30
+  вопросов / ≥80%»); **исправлен** — F-04 закрыт. Источник истины —
+  `docs/research/` (CC-10).
 - Схем БД, роутов и Pydantic-моделей нет — документ их и определяет.
 
 ## 3. Участники и их контракты
@@ -52,12 +53,14 @@
 
 - JSON API живёт под `/api`, **без версии** (CC-07). Формат — `application/json`,
   имена полей `snake_case`, время — ISO-8601 UTC с `Z`.
-- Все `/api/*`, кроме `/health*`, требуют валидной сессии; иначе **401 JSON**
-  `unauthorized` (без редиректа). Страницы при отсутствии сессии → `303` на
-  `/auth?next=<path>`.
+- Все `/api/*` требуют валидной сессии; иначе **401 JSON** `unauthorized`
+  (без редиректа). Публичные API-эндпоинты — только `/health` и `/health/live`.
+  Страницы при отсутствии сессии → `303` на `/auth?next=<path>`.
 - Изменяющие методы (`POST`, `PUT`, `DELETE`) требуют CSRF-токен: заголовок
-  `X-CSRF-Token` или поле `csrf_token`. Токен привязан к серверной сессии
-  (CC-30), несовпадение → `403 csrf_invalid`.
+  `X-CSRF-Token` или поле `csrf_token`. Для авторизованных запросов токен
+  привязан к серверной сессии (CC-30); для `POST /auth/login|register` —
+  анонимный double-submit, выданный на `GET /auth` (CC-34). Несовпадение →
+  `403 csrf_invalid`.
 - Конверт ошибки:
 
 ```json
@@ -76,8 +79,8 @@
 | Метод | Путь | Тело | Успех | Ошибки |
 |---|---|---|---|---|
 | GET | `/auth` | — | 200 страница; при сессии → 303 `/` | — |
-| POST | `/auth/register` | `email, password, password_confirm, consent=on` | 303 `/` (+`HX-Redirect`) | 200 + фрагмент с ошибками под полями |
-| POST | `/auth/login` | `email, password, next?` | 303 `next` или `/` | 200 + фрагмент, общее сообщение |
+| POST | `/auth/register` | `email, password, password_confirm, consent=on` | 303 `/` (+`HX-Redirect`) | 403 `csrf_invalid`; 200 + фрагмент с ошибками под полями |
+| POST | `/auth/login` | `email, password, next?` | 303 `next` или `/` | 403 `csrf_invalid`; 200 + фрагмент, общее сообщение |
 | POST | `/auth/logout` | — | 303 `/auth`, строка сессии удалена | 403 `csrf_invalid` |
 
 - Регистрация без `consent` не проходит (D-01). Дубликат email → ошибка под полем.
@@ -96,15 +99,16 @@
 {"chat_id": null, "text": "Как составить ТЗ?"}
 ```
 
-- `chat_id = null` → в одной транзакции создаются чат (title = первые 60 символов
-  вопроса, обрезка по слову + `…`) и user-сообщение; далее SSE.
-- `chat_id` задан → проверяется владелец (иначе `404 not_found`), лимит 40
-  сообщений (иначе `409 chat_limit_reached`), отсутствие активного стрима в чате
-  (иначе `409 generation_in_progress`).
+- `chat_id = null` → в одной транзакции создаются чат (title по правилам
+  06 CONV-01: первый вопрос, 60 символов) и user-сообщение; далее SSE.
+- `chat_id` задан → проверяется владелец (иначе `404 not_found`), место под
+  пару user+assistant: `messages_count + 2 ≤ CHAT_MAX_MESSAGES` (иначе `409
+  chat_limit_reached`), отсутствие активного стрима в чате (иначе `409
+  generation_in_progress`).
 - `text` после `strip()` непустой, ≤ 2000 символов, иначе `422 validation_error`.
 - Ответ всегда `text/event-stream`; **до** первого байта стрима возможны только
   HTTP-ошибки. Их перечень: 401, 403, 404, 409, 422, 503 `llm_busy` (буфер
-  очереди заполнен).
+  очереди заполнен) и 503 `llm_unavailable` (провайдер недоступен до старта).
 - Если запрос отклонён до старта стрима, **user-сообщение не сохраняется**,
   текст остаётся в поле ввода (UI показывает toast).
 - Очередь LLM (CC-03): 4 слота, буфер `LLM_QUEUE_MAX=8`, ожидание
@@ -126,8 +130,8 @@
 | `done` | терминальное при успехе/остановке | `{status, message_id, sources_count}` |
 | `error` | терминальное при сбое | `{code, message, retryable}` |
 
-`Source`: `{source_no, chunk_id, document_title, material_type, heading_path,
-snippet}`.
+`Source`: `{source_no, chunk_id, doc_key, document_title, material_type,
+heading_path, snippet}`.
 
 Правила:
 
@@ -140,7 +144,9 @@ snippet}`.
 - `chunk_id` — строка, идентификатор чанка из индекса (формат определяет 04).
 - Транспорт: `POST` + `fetch`/`ReadableStream` (EventSource не умеет POST,
   HTMX SSE — только GET). Разрыв соединения клиентом = отмена генерации.
-- Обрыв **без** `stop` → частичный текст не сохраняется, статус `no_reply`.
+- Assistant-сообщение создаётся до генерации (в `meta`) со статусом-заглушкой
+  `no_reply`; по завершении статус заменяется финальным (CC-38). Обрыв **без**
+  `stop` → частичный текст не сохраняется, остаётся `no_reply`.
 
 ### FR-5. Остановка генерации (новая фича, UI-25)
 
@@ -203,16 +209,18 @@ snippet}`.
 
 - `value ∈ like | dislike | null`; `null` удаляет оценку вместе с комментарием.
 - `comment` ≤ 1000, опционален; без оценки невозможен.
-- Оценивать можно только assistant-сообщения своих чатов; иначе `404 not_found`.
+- Оценивать можно только assistant-сообщения своих чатов; `no_reply` оценивать
+  нельзя (нет содержания); иначе `404 not_found`.
 - Ответ 200: `{value, comment, updated_at}` (+ `value: null` после удаления).
 
 ### FR-8. Профиль и удаление истории
 
 - `GET /profile` — HTML: аватар-буква, email, `created_at`, число чатов,
   «Согласие получено <дата>».
-- `POST /api/profile/password` `{current_password, new_password}` → 204.
-  Неверный текущий → `422 invalid_current_password`; слабый новый → `422
-  validation_error`. Остальные сессии отзываются.
+- `POST /api/profile/password` `{current_password, new_password,
+  new_password_confirm}` → 204. Неверный текущий → `422
+  invalid_current_password`; несовпадение подтверждения или слабый новый →
+  `422 validation_error`. Остальные сессии отзываются.
 - `POST /api/profile/history/delete` `{confirm: true}` → 200
   `{deleted_chats: N}`; без `confirm` → `422 validation_error`. Удаляются чаты
   пользователя (каскадно сообщения и оценки), аккаунт остаётся.
@@ -227,13 +235,15 @@ snippet}`.
 | `not_found` | 404 | объект не существует **или** чужой |
 | `validation_error` | 422 | поля, лимиты, курсор, невалидный ввод |
 | `invalid_current_password` | 422 | неверный текущий пароль |
+| `too_many_attempts` | 429 | вход: 5 неудач за 15 минут по `email+IP` (07 SEC-03) |
 | `generation_in_progress` | 409 | в чате уже идёт стрим (вторая вкладка) |
-| `chat_limit_reached` | 409 | 40 сообщений в чате |
+| `chat_limit_reached` | 409 | в чате уже 40 сообщений |
 | `llm_busy` | 503 | очередь LLM переполнена / ожидание истекло |
 | `llm_unavailable` | 503 | LLM недоступна, таймаут, сеть |
 | `internal_error` | 500 | прочее; `details.request_id` обязателен |
 
 Кода `rate_limited` **нет**: пользовательская квота отменена (CC-23, D-08).
+`too_many_attempts` — только троттлинг входа, к API-квотам отношения не имеет.
 
 ### FR-10. `/health`
 
@@ -248,18 +258,26 @@ snippet}`.
  "components": {
    "db": "ok|down",
    "qdrant": "ok|down",
-   "llm": "ok|degraded|unknown",
-   "kb": {"status": "ok|empty|not_indexed", "documents": 0,
+   "embedding": "ok|degraded|down|unknown",
+   "llm": "ok|degraded|down|unknown",
+   "kb": {"status": "ok|empty|not_indexed|degraded", "documents": 0,
           "chunks": 0, "indexed_at": null}}}
 ```
 
 - `503` только при `db=down` (сервис недееспособен). Пустая БЗ → `degraded` + 200
   (CC-01, продукт отвечает в режиме `ungrounded`).
-- `kb.status = empty` при 0 документов; `not_indexed` при документах без чанков
-  в Qdrant; `ok` иначе.
-- LLM **не опрашивается** на каждый запрос: результат `GET {LLM_BASE_URL}/models`
-  с таймаутом 3 с кэшируется на 60 с; до первого опроса — `unknown`; 404/405 от
-  провайдера → `unknown` (не `down`).
+- Top-level `degraded` — если `db` в порядке, но `embedding`/`llm` в
+  `degraded`/`down`, `qdrant=down` или `kb.status != ok`; `unknown` не
+  понижает статус. `down` верхнего уровня — только `db=down`.
+- `kb.status`: `empty` — 0 строк; `degraded` — есть `failed`;
+  `not_indexed` — есть строки, но 0 `indexed` и нет `failed`; `ok` иначе.
+  Приоритет: `degraded` → `not_indexed` → `empty` → `ok`.
+- LLM и эмбеддинги **не опрашиваются** на каждый запрос: результат
+  `GET {…_BASE_URL}/models` с таймаутом 3 с кэшируется на 60 с.
+  `ok` — 200 и целевая модель в списке; `degraded` — 200, но модели нет;
+  `down` — соединение/таймаут/5xx; `unknown` — ещё не опрашивались или
+  404/405 (провайдер не поддерживает `/models`). Сбой эмбеддингов →
+  `embedding: down`, `status: degraded` (D-36).
 - Эндпоинты публичные, без секретов и внутренних URL; в логи не пишутся (CC-20).
 
 ## 5. Данные и точки интеграции
@@ -349,9 +367,10 @@ CREATE INDEX ix_ratings_user ON message_ratings(user_id);
 
 - Очередь LLM — in-process: `asyncio.Semaphore(LLM_MAX_CONCURRENCY)` + счётчик
   ожидающих (`LLM_QUEUE_MAX`). При рестарте сбрасывается (активных стримов нет).
-- Активные стримы — in-process `dict[chat_id → task]`; при рестарте история
-  остаётся, незавершённые assistant-сообщения не появляются (они пишутся только
-  по завершении).
+- Активные стримы — in-process `dict[chat_id → task]`; assistant-сообщение
+  создаётся в `meta` со статусом `no_reply` и обновляется по завершении.
+  При рестарте незавершённые ответы остаются `no_reply` (без текста), история
+  не теряет вопрос (CC-38).
 - `last_seen_at` обновляется не чаще раза в 5 минут (иначе запись на каждый
   запрос).
 
@@ -360,9 +379,11 @@ CREATE INDEX ix_ratings_user ON message_ratings(user_id);
 | Cookie | Значения | Флаги |
 |---|---|---|
 | `sa_session` | сырой токен 32 байта (base64url) | `HttpOnly`, `SameSite=Lax`, `Secure` при `COOKIE_SECURE=true`, `Path=/`, `Max-Age=7d` |
-| `csrf_token` | дублирует `sessions.csrf_token` | `SameSite=Lax`, `Secure` аналогично, `Path=/`, **не** `HttpOnly` |
+| `csrf_token` | после входа дублирует `sessions.csrf_token`; до входа — анонимный double-submit для `/auth` | `SameSite=Lax`, `Secure` аналогично, `Path=/`, **не** `HttpOnly` |
 
 CSRF дополнительно отдаётся в HTML (`<meta name="csrf-token">` и hidden-поле).
+На `GET /auth` выставляется анонимный `csrf_token`; после успешного входа
+cookie перезаписывается session-bound значением (CC-34).
 
 ### 5.4. Переменные окружения (`Settings`)
 
@@ -385,16 +406,35 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | `EMBEDDING_MODEL` | — | модель эмбеддингов |
 | `EMBEDDING_TIMEOUT_SECONDS` | `60` | таймаут |
 | `RETRIEVAL_TOP_K` | `10` | top-k выдачи (05) |
-| `RETRIEVAL_SCORE_THRESHOLD` | — | порог, значение в 05 |
+| `RETRIEVAL_SCORE_THRESHOLD` | `0.65` | порог релевантности (05 RAG-12) |
+| `EMBEDDING_QUERY_PREFIX` | `""` | префикс запроса для e5-подобных моделей |
+| `CONTEXT_TOKEN_BUDGET` | `26000` | бюджет входа (05 FR-5) |
+| `HISTORY_MESSAGES` | `6` | сообщений истории в промпт |
+| `HISTORY_MESSAGE_MAX_CHARS` | `800` | обрезка одного сообщения |
+| `MAX_SOURCES` | `8` | максимум источников в ответе |
+| `REWRITE_ENABLED` | `true` | переформулировка запроса (05) |
+| `RAG_DEADLINE_SECONDS` | `120` | дедлайн вопроса |
+| `LLM_TEMPERATURE` | `0.2` | генерация (rewrite — 0) |
+| `LLM_TOP_P` | `0.9` | генерация |
+| `LLM_MAX_TOKENS` | `1200` | длина ответа |
+| `LLM_FIRST_TOKEN_TIMEOUT_SECONDS` | `45` | первый токен |
+| `CHUNK_TARGET` | `600` | чанкинг (04 KB-11) |
+| `CHUNK_MAX` | `900` | чанкинг |
+| `CHUNK_MIN` | `150` | чанкинг |
+| `CHUNK_OVERLAP` | `90` | перекрытие |
+| `CHUNK_ABSOLUTE_MAX` | `3000` | потолок атомарного блока (04 KB-10) |
 | `KB_DATA_DIR` | `/data/kb` | корпус |
 | `SESSION_TTL_DAYS` | `7` | TTL сессии |
 | `CHAT_MAX_MESSAGES` | `40` | потолок чата |
-| `COOKIE_SECURE` | `true` | флаг `Secure` у cookie |
+| `APP_TIMEZONE` | `Asia/Yekaterinburg` | группировка истории (06 CONV-02) |
+| `CONSENT_VERSION` | `2026-11-25` | версия согласия (07 SEC-06) |
+| `SUPPORT_EMAIL` | `garussm@gmail.com` | адрес поддержки в модалке сброса (07) |
+| `COOKIE_SECURE` | `true` | флаг `Secure` у cookie; в HTTP-стенде `false` (D-35) |
 | `DEBUG` | `false` | `/docs`, подробности ошибок |
 | `APP_VERSION` | `0.1.0` | для `/health` |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | bootstrap-админ (07) |
 
-Удаляется: `RATE_LIMIT_PER_HOUR` (CC-23). `LLM_PROVIDER` не влияет на логику —
+Удаляются: `RATE_LIMIT_PER_HOUR` (CC-23) и `ADMIN_EMAIL`/`ADMIN_PASSWORD`
+(07 D-26, вместо них `SUPPORT_EMAIL`). `LLM_PROVIDER` не влияет на логику —
 только стартовый лог и `/health`.
 
 ## 6. Граничные случаи
@@ -404,7 +444,7 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | Пустой/пробельный вопрос | `422 validation_error`, ничего не создаётся |
 | `chat_id` чужого чата | `404 not_found` (не 403) |
 | Вторая вкладка шлёт вопрос во время стрима | `409 generation_in_progress` |
-| 40-е сообщение в чате | `409 chat_limit_reached`, UI предлагает новый чат |
+| Попытка 41-го сообщения (в чате уже 40) | `409 chat_limit_reached`, UI предлагает новый чат |
 | Очередь LLM переполнена | `503 llm_busy`, текст остаётся в поле |
 | Ожидание в очереди > 60 с | `error {llm_busy}`, user-сообщение остаётся, статус `no_reply` |
 | LLM недоступна/таймаут | `error {llm_unavailable}` или HTTP 503 до стрима |
@@ -421,6 +461,7 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | Удаление истории при открытом чате | `200`, UI → `/` |
 | Двойной клик по «Оценить» | `PUT` идемпотентен, дублей нет |
 | Оценка чужого сообщения | `404 not_found` |
+| Оценка `no_reply` | `404 not_found`, кнопок в UI нет |
 | Повторная регистрация email | ошибка под полем, 200-фрагмент |
 | CSRF-токен отсутствует | `403 csrf_invalid` (для форм — фрагмент + 403) |
 
@@ -428,8 +469,9 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 
 - **Производительность:** первый `delta` — без ожидания полного ответа; стартовая
   выдача истории — 2 сообщения; список чатов — keyset-пагинация без `OFFSET`.
-- **Устойчивость:** ошибки зависимостей не превращаются в assistant-сообщения;
-  `no_reply` — единственный «пустой» статус в истории.
+- **Устойчивость:** ошибки зависимостей не превращаются в текст ответа;
+  assistant-сообщение остаётся `no_reply` (плейсхолдер); `no_reply` —
+  единственный «пустой» статус в истории (CC-38).
 - **Безопасность:** Argon2id, сессии в БД (в куке — только токен), CSRF, `Secure`
   + `HttpOnly`, `SameSite=Lax`, 404 вместо 403 для чужих объектов, экранирование
   пользовательского текста и санитайзинг Markdown (01).
@@ -453,15 +495,18 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
       текста; повторный stop → 204.
 - [ ] 4 слота LLM + буфер 8; переполнение → мгновенный `503 llm_busy`; ожидание
       > 60 с → `error llm_busy`.
-- [ ] Лимит 40 сообщений → `409 chat_limit_reached` и плашка в UI.
+- [ ] При 40 сообщениях попытка отправить 41-е → `409 chat_limit_reached` и
+      плашка в UI.
 - [ ] История: старт с 2 сообщений, догрузка по 20, `has_more`/`oldest_seq`.
 - [ ] Оценка: upsert, изменение, удаление (`value:null`), восстановление после
-      перезагрузки, чужие → 404.
+      перезагрузки, чужие и `no_reply` → 404.
 - [ ] Ошибки соответствуют таблице кодов; `rate_limited` отсутствует.
 - [ ] `/health/live` не зависит от БД; `/health` даёт `degraded` при пустой БЗ и
-      503 только при `db=down`; LLM-статус кэшируется.
+      503 только при `db=down`; статусы LLM и эмбеддингов кэшируются.
 - [ ] Cookie: `sa_session` HttpOnly, TTL 7 дней, смена пароля отзывает прочие
-      сессии; CSRF-токен привязан к сессии.
+      сессии; CSRF-токен привязан к сессии; `/auth` защищён анонимным
+      double-submit.
+- [ ] `Source` содержит `doc_key`; смена пароля требует `new_password_confirm`.
 - [ ] В логах нет текста сообщений; `request_id` есть в каждом ответе об ошибке.
 - [ ] `Settings` содержит все переменные из §5.4; `.env.example` исправлен
       (`EMBEDDING_BASE_URL` без `/embeddings`, добавлен `EMBEDDING_API_KEY`).
@@ -477,9 +522,9 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | CC-05 | `BIGINT IDENTITY`; `timestamptz` UTC; `seq` в рамках чата; источники — JSONB-снимок; оценки — отдельная таблица `UNIQUE(message_id)`. |
 | CC-06 | `consent_at` + `consent_version` в `users`. Закрывает OQ-05. |
 | CC-07 | `/api` без версии; единый конверт ошибок; 401 JSON для API; `/docs` выключен в prod. |
-| CC-08 | `/health/live` + `/health`; 503 только при `db=down`; LLM-статус кэшируется 60 с. |
+| CC-08 | `/health/live` + `/health`; 503 только при `db=down`; статусы LLM и эмбеддингов кэшируются 60 с; enum `ok\|degraded\|down\|unknown`, top-level `degraded` по правилу FR-10. |
 | CC-09 | `LLM_PROVIDER`/`EMBEDDING_PROVIDER` — только диагностика; нормализация env. Закрывает PR-15. |
-| CC-10 | Источник истины — `docs/research/`; README синхронизируется отдельной задачей. |
+| CC-10 | Источник истины — `docs/research/`; README синхронизирован 2026-11-25 (F-04 закрыт). |
 | CC-11 | ~~Один пустой чат на пользователя, переиспользование через `POST /api/chats`~~ — **отменено CC-27**. |
 | CC-12 | UI блокирует ввод во время стрима, показывает «Остановить»; серверный 409 остаётся защитой от второй вкладки. |
 | CC-13 | `PUT /api/messages/{id}/rating` — upsert; `value:null` удаляет; комментарий без оценки невозможен; чужие → 404. |
@@ -487,19 +532,27 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | CC-15 | Лимиты: email ≤ 254, пароль 8…128, вопрос ≤ 2000, комментарий ≤ 1000, заголовок 60, `limit` 1…50 (15). |
 | CC-16 | Пользовательский rate-limit 100/ч отменён как излишний. |
 | CC-17 | Auth — HTML-формы (303/`HX-Redirect`); `/api/*` — JSON. |
-| CC-18 | `status ∈ grounded\|ungrounded\|no_answer\|no_reply`; ошибки не персистятся; `meta` JSONB для отладки. Расширено CC-21 (`stopped`). |
+| CC-18 | `status ∈ grounded\|ungrounded\|no_answer\|no_reply`; текст ошибки не персистится, assistant-плейсхолдер `no_reply` остаётся (CC-38); `meta` JSONB для отладки. Расширено CC-21 (`stopped`). |
 | CC-19 | История — ленивая загрузка; потолок чата 40 сообщений. |
 | CC-20 | `structlog`, `request_id`, без текста сообщений в логах, health не логируется. |
 | CC-21 | «Остановить»: `POST /api/chats/{id}/stop`, частичный текст сохраняется (`stopped`); обрыв без stop → `no_reply`. |
 | CC-22 | `RETRIEVAL_TOP_K=10` в `Settings` и 05; JSON — чанки, UI — группировка по файлу. |
 | CC-23 | `rate_limited` и `RATE_LIMIT_PER_HOUR` удалены; защита от перебора паролей — 07 (дельта D-08 к 02). |
 | CC-24 | История: старт с 2 последних сообщений, догрузка по 20 до потолка 40. |
-| CC-25 | 40 сообщений → ввод блокируется, плашка с переходом в новый чат; `CHAT_MAX_MESSAGES=40`. |
+| CC-25 | При 40 сообщениях 41-я отправка блокируется, плашка с переходом в новый чат; `CHAT_MAX_MESSAGES=40`. |
 | CC-26 | Чат не создаётся, пока не задан первый вопрос. |
 | CC-27 | `POST /api/chats` удалён; единая точка `POST /api/messages {chat_id?, text}`; `meta` отдаёт `chat_id`/`chat_title`. Отменяет CC-11. |
 | CC-28 | JSON источников — чанки; UI группирует по файлу; `[n]` ведёт к чанку. |
 | CC-29 | Остановка завершается `done {status:"stopped"}`, `stop` идемпотентен (204), пустой остановленный ответ сохраняется. |
-| CC-30 | CSRF-токен хранится в сессии и сравнивается с присланным значением (а не только с cookie) — строже классического double-submit. |
+| CC-30 | CSRF: для авторизованных запросов токен хранится в сессии и сравнивается с присланным; для `/auth` — анонимный double-submit (CC-34). |
+| CC-31 | `SUPPORT_EMAIL` заменяет `ADMIN_EMAIL`/`ADMIN_PASSWORD`; bootstrap-админа нет (07 SEC-01, D-26). |
+| CC-32 | Код `too_many_attempts` (429) — только троттлинг входа, не API-квота (07 SEC-03, D-27). |
+| CC-33 | В `/health` добавлен компонент `embedding` — сбой LAN-модели эмбеддингов виден отдельно (09 D-36). |
+| CC-34 | CSRF для `/auth/login` и `/auth/register` — анонимный double-submit: токен выдаётся на `GET /auth` и проверяется до создания сессии; после входа cookie перезаписывается session-bound значением. |
+| CC-35 | `Source` дополнен `doc_key` (стабильный ключ документа) для eval и группировки; снимок в `messages.sources` хранит его же. |
+| CC-36 | Статусы `/health`: `llm`/`embedding` — `ok\|degraded\|down\|unknown`; `kb.status` — `ok\|empty\|not_indexed\|degraded`; top-level `degraded` — при любом не-`ok` компоненте, кроме `unknown` и `db=down`; `down` — только при `db=down`. |
+| CC-37 | `POST /api/profile/password` принимает `new_password_confirm`; несовпадение → `422 validation_error`. |
+| CC-38 | Assistant-сообщение создаётся в `meta` со статусом-заглушкой `no_reply`, по завершении обновляется финальным статусом; при сбое/рестарте остаётся `no_reply` без текста. |
 
 ### Дефекты и дельты, зафиксированные здесь
 
@@ -508,30 +561,30 @@ CSRF дополнительно отдаётся в HTML (`<meta name="csrf-toke
 | D-08 | Отмена лимита 100 запросов/час (FR-8, edge case «429», критерий приёмки 02) | 02 (отменяет) |
 | D-09 | `POST /api/chats` удалён, введён `POST /api/messages` | 01 §9 |
 | D-10 | Остановка генерации переходит из бэклога в скоуп (UI-25) | 01 §16 |
-| D-11 | Пустой чат как сущность исчезает; UI-04 «Новый чат» = локальный пустой экран | 01 §5 |
+| D-11 | Пустой чат как сущность исчезает; UI-27 «Новый чат» = локальный пустой экран | 01 §5 |
 | D-12 | Источники: чанки в JSON, файлы в UI (уточнение §6 01) | 01 |
 | D-13 | Ленивая загрузка истории (UI-26) | 01 |
 | D-14 | Потолок 40 сообщений на чат | 02, 06 |
 | F-01 | `EMBEDDING_BASE_URL` содержит `/embeddings` (двойной путь) | `.env.example`, `config.py` |
 | F-02 | Нет `EMBEDDING_API_KEY`, `LLM_MAX_CONCURRENCY`, таймаутов, `RETRIEVAL_TOP_K`, `CHAT_MAX_MESSAGES` | `config.py` |
 | F-03 | `deploy/Caddyfile` отсутствует | 09 |
-| F-04 | README противоречит 01/02 | 10 / отдельная задача |
+| F-04 | README противоречил 01/02 — **закрыт**: README синхронизирован 2026-11-25 | README |
 | F-05 | `qdrant-client[fastembed]` при внешних эмбеддингах | `pyproject.toml` |
 
 ## 10. Открытые вопросы
 
-- **OQ-03-01** (→ 04): имя и структура таблицы документов корпуса (`kb_documents`),
-  формат `chunk_id`, источник counts для `/health`.
-- **OQ-03-02** (→ 05): порог релевантности (`RETRIEVAL_SCORE_THRESHOLD`) и способ
-  валидации цитат — определяют долю `grounded`/`ungrounded`/`no_answer`.
-- **OQ-03-03** (→ 07): защита `/auth/login` от перебора (задержка/счётчик по
-  email+IP), bootstrap-админ.
-- **OQ-03-04** (→ 09): HTTPS, домен, бэкапы, ротация логов; healthcheck `app` на
-  `/health/live`.
-- **OQ-03-05** (→ 06): поведение списка при массовом удалении, сортировка после
-  удаления истории; форма ответа при `deleted_chats = 0`.
-- **OQ-03-06**: значения `LLM_QUEUE_MAX=8` и таймаутов приняты как рабочие;
-  могут уточняться нагрузочным smoke в M2 без смены контракта.
+Блокирующих открытых вопросов нет: OQ-03-01…06 закрыты или перенесены в 04–09.
+
+- **OQ-03-01** — закрыт 04: таблицы `kb_documents`/`kb_chunks`,
+  `chunk_id = UUIDv5`, counts для `/health` — FR-11.
+- **OQ-03-02** — закрыт 05: порог 0.65, валидация цитат по снимку.
+- **OQ-03-03** — закрыт 07: троттлинг 5/15 по `email+IP`, bootstrap-админа нет.
+- **OQ-03-04** — закрыт 09: HTTP по IP, бэкапы — бэклог, healthcheck `app`
+  на `/health/live`, Caddy — необязательный профиль.
+- **OQ-03-05** — закрыт 06: `deleted_chats = 0` — успех, сортировка после
+  удаления — по `updated_at DESC`.
+- **OQ-03-06** — принят: `LLM_QUEUE_MAX=8` и таймауты — рабочие значения;
+  калибровка — 05 OQ-05-01 без смены контракта.
 
 ## 11. Бэклог
 
